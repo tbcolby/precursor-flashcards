@@ -2,8 +2,6 @@
 
 A flashcard viewer app for the [Precursor](https://www.crowdsupply.com/sutajio-kosagi/precursor) hardware platform running [Xous OS](https://github.com/betrusted-io/xous-core).
 
-Built entirely with LLM-assisted development (Claude Code) on macOS ARM64 — from zero Xous knowledge to a working app running on the emulated hardware.
-
 ## Screenshots
 
 | Question | Answer | Navigation |
