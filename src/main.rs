@@ -1,15 +1,21 @@
 #![cfg_attr(target_os = "none", no_std)]
 #![cfg_attr(target_os = "none", no_main)]
 
-use num_traits::{FromPrimitive, ToPrimitive};
-use std::fmt::Write;
+mod deck;
+mod import;
+mod storage;
+mod ui;
 
-use blitstr2::GlyphStyle;
-use gam::{TextBounds, TextView, UxRegistration};
-use ux_api::minigfx::*;
+use num_traits::{FromPrimitive, ToPrimitive};
+
+use gam::UxRegistration;
+use gam::menu::*;
+
+use crate::deck::{Card, DeckMeta};
+use crate::storage::DeckStorage;
 
 const SERVER_NAME: &str = "_Flashcards_";
-const APP_NAME: &str = "Flashcards"; // Must match context_name in manifest.json
+const APP_NAME: &str = "Flashcards";
 
 #[derive(Debug, num_derive::FromPrimitive, num_derive::ToPrimitive)]
 enum AppOp {
@@ -19,16 +25,28 @@ enum AppOp {
     Quit,
 }
 
-struct Card {
-    front: &'static str,
-    back: &'static str,
+#[derive(Clone)]
+enum AppState {
+    DeckList,
+    CardReview,
+    DeckMenu { confirm_delete: bool },
+    ImportWait,
 }
 
 struct FlashcardApp {
     gam: gam::Gam,
+    #[allow(dead_code)]
     token: [u32; 4],
     content: gam::Gid,
     screensize: Point,
+    storage: DeckStorage,
+    state: AppState,
+    // Deck list state
+    decks: Vec<DeckMeta>,
+    cursor: usize,
+    scroll_offset: usize,
+    // Card review state
+    current_deck_name: String,
     cards: Vec<Card>,
     current_card: usize,
     showing_back: bool,
@@ -56,155 +74,142 @@ impl FlashcardApp {
         let content = gam.request_content_canvas(token).expect("couldn't get canvas");
         let screensize = gam.get_canvas_bounds(content).expect("couldn't get dimensions");
 
-        let cards = vec![
-            Card {
-                front: "What is Xous?",
-                back: "A microkernel OS for the Precursor, using message-passing IPC between servers.",
-            },
-            Card {
-                front: "What is the Precursor display?",
-                back: "336x536 pixels, 1-bit (black and white only). No grayscale or color.",
-            },
-            Card {
-                front: "What is the PDDB?",
-                back: "Plausibly Deniable Database. Encrypted key-value storage organized as basis > dictionary > key.",
-            },
-            Card {
-                front: "How do apps draw to screen?",
-                back: "Through the GAM (Graphics Abstraction Manager) service, which manages canvases and trust levels.",
-            },
-            Card {
-                front: "What CPU does Precursor use?",
-                back: "100MHz VexRISC-V RV32IMAC. Single core, no FPU. Think carefully about computation.",
-            },
-            Card {
-                front: "How does IPC work in Xous?",
-                back: "Message passing. Scalar messages (4 usizes) or memory messages (buffer transfer). No shared memory.",
-            },
-            Card {
-                front: "What is a Server ID (SID)?",
-                back: "A unique address for a process's message queue. Obtained by registering a name with xous-names.",
-            },
-            Card {
-                front: "How do apps handle input?",
-                back: "Register rawkeys_id with GAM. Keys arrive as up to 4 chars packed in scalar message parameters.",
-            },
-        ];
+        let storage = DeckStorage::new();
+        storage.ensure_demo_deck();
+        let decks = storage.list_decks();
 
         Self {
             gam,
             token,
             content,
             screensize,
-            cards,
+            storage,
+            state: AppState::DeckList,
+            decks,
+            cursor: 0,
+            scroll_offset: 0,
+            current_deck_name: String::new(),
+            cards: Vec::new(),
             current_card: 0,
             showing_back: false,
         }
     }
 
     fn redraw(&self) {
-        let card = &self.cards[self.current_card];
-
-        // Clear screen
-        self.gam
-            .draw_rectangle(
-                self.content,
-                Rectangle::new_with_style(
-                    Point::new(0, 0),
+        match &self.state {
+            AppState::DeckList => {
+                ui::draw_deck_list(
+                    &self.gam,
+                    self.content,
                     self.screensize,
-                    DrawStyle {
-                        fill_color: Some(PixelColor::Light),
-                        stroke_color: None,
-                        stroke_width: 0,
-                    },
-                ),
-            )
-            .expect("can't clear");
-
-        // Draw card border
-        let margin = 12;
-        let card_top = 40;
-        let card_bottom = self.screensize.y - 80;
-        self.gam
-            .draw_rounded_rectangle(
-                self.content,
-                RoundedRectangle::new(
-                    Rectangle::new_with_style(
-                        Point::new(margin, card_top),
-                        Point::new(self.screensize.x - margin, card_bottom),
-                        DrawStyle {
-                            fill_color: None,
-                            stroke_color: Some(PixelColor::Dark),
-                            stroke_width: 2,
-                        },
-                    ),
-                    6,
-                ),
-            )
-            .expect("can't draw card border");
-
-        // Draw side indicator (front/back)
-        let mut side_tv = TextView::new(
-            self.content,
-            TextBounds::BoundingBox(Rectangle::new_coords(
-                margin + 8,
-                card_top + 8,
-                self.screensize.x - margin - 8,
-                card_top + 30,
-            )),
-        );
-        side_tv.style = GlyphStyle::Small;
-        side_tv.clear_area = true;
-        if self.showing_back {
-            write!(side_tv.text, "ANSWER").unwrap();
-        } else {
-            write!(side_tv.text, "QUESTION").unwrap();
+                    &self.decks,
+                    self.cursor,
+                    self.scroll_offset,
+                );
+            }
+            AppState::CardReview => {
+                if let Some(card) = self.cards.get(self.current_card) {
+                    ui::draw_card_review(
+                        &self.gam,
+                        self.content,
+                        self.screensize,
+                        &self.current_deck_name,
+                        card,
+                        self.current_card,
+                        self.cards.len(),
+                        self.showing_back,
+                    );
+                }
+            }
+            AppState::DeckMenu { confirm_delete } => {
+                let card_count = self.decks.get(self.cursor).map(|d| d.card_count).unwrap_or(0);
+                ui::draw_deck_menu(
+                    &self.gam,
+                    self.content,
+                    self.screensize,
+                    &self.current_deck_name,
+                    card_count,
+                    *confirm_delete,
+                );
+            }
+            AppState::ImportWait => {
+                ui::draw_import_wait(
+                    &self.gam,
+                    self.content,
+                    self.screensize,
+                    import::listen_port(),
+                );
+            }
         }
-        self.gam.post_textview(&mut side_tv).expect("can't post side");
-
-        // Draw card content
-        let text = if self.showing_back { card.back } else { card.front };
-        let mut tv = TextView::new(
-            self.content,
-            TextBounds::BoundingBox(Rectangle::new_coords(
-                margin + 16,
-                card_top + 40,
-                self.screensize.x - margin - 16,
-                card_bottom - 16,
-            )),
-        );
-        tv.style = GlyphStyle::Regular;
-        tv.clear_area = true;
-        write!(tv.text, "{}", text).unwrap();
-        self.gam.post_textview(&mut tv).expect("can't post text");
-
-        // Draw navigation footer
-        let mut nav_tv = TextView::new(
-            self.content,
-            TextBounds::BoundingBox(Rectangle::new_coords(
-                margin,
-                card_bottom + 12,
-                self.screensize.x - margin,
-                self.screensize.y - 10,
-            )),
-        );
-        nav_tv.style = GlyphStyle::Small;
-        nav_tv.clear_area = true;
-        write!(
-            nav_tv.text,
-            "Card {}/{}  |  <-/-> navigate  SPACE flip",
-            self.current_card + 1,
-            self.cards.len()
-        )
-        .unwrap();
-        self.gam.post_textview(&mut nav_tv).expect("can't post nav");
-
-        self.gam.redraw().expect("can't redraw");
     }
 
     fn handle_key(&mut self, key: char) {
+        match self.state.clone() {
+            AppState::DeckList => self.handle_key_deck_list(key),
+            AppState::CardReview => self.handle_key_card_review(key),
+            AppState::DeckMenu { confirm_delete } => self.handle_key_deck_menu(key, confirm_delete),
+            AppState::ImportWait => {
+                // Import state handles 'q' for cancel but the listener blocks,
+                // so in practice this is only reached after import completes
+                if key == 'q' {
+                    self.state = AppState::DeckList;
+                    self.refresh_deck_list();
+                    self.redraw();
+                }
+            }
+        }
+    }
+
+    fn handle_key_deck_list(&mut self, key: char) {
         match key {
-            // Right arrow or 'n' - next card
+            '↓' | 'j' => {
+                if !self.decks.is_empty() && self.cursor < self.decks.len() - 1 {
+                    self.cursor += 1;
+                    self.update_scroll();
+                    self.redraw();
+                }
+            }
+            '↑' | 'k' => {
+                if self.cursor > 0 {
+                    self.cursor -= 1;
+                    self.update_scroll();
+                    self.redraw();
+                }
+            }
+            '\r' | '\n' => {
+                if let Some(deck_meta) = self.decks.get(self.cursor) {
+                    let name = deck_meta.name.clone();
+                    if let Some(cards) = self.storage.load_deck(&name) {
+                        self.current_deck_name = name;
+                        self.cards = cards;
+                        self.current_card = 0;
+                        self.showing_back = false;
+                        self.state = AppState::CardReview;
+                        self.redraw();
+                    }
+                }
+            }
+            'i' => {
+                self.state = AppState::ImportWait;
+                self.redraw();
+                self.do_import();
+            }
+            'm' => {
+                if let Some(deck_meta) = self.decks.get(self.cursor) {
+                    self.current_deck_name = deck_meta.name.clone();
+                    self.state = AppState::DeckMenu { confirm_delete: false };
+                    self.redraw();
+                }
+            }
+            'q' => {
+                // Quit is handled by the main loop sending AppOp::Quit
+            }
+            _ => {}
+        }
+    }
+
+    fn handle_key_card_review(&mut self, key: char) {
+        match key {
             '→' | 'n' => {
                 if self.current_card < self.cards.len() - 1 {
                     self.current_card += 1;
@@ -212,7 +217,6 @@ impl FlashcardApp {
                     self.redraw();
                 }
             }
-            // Left arrow or 'p' - previous card
             '←' | 'p' => {
                 if self.current_card > 0 {
                     self.current_card -= 1;
@@ -220,12 +224,100 @@ impl FlashcardApp {
                     self.redraw();
                 }
             }
-            // Space or Enter - flip card
             ' ' | '\r' | '\n' => {
                 self.showing_back = !self.showing_back;
                 self.redraw();
             }
+            'q' => {
+                self.state = AppState::DeckList;
+                self.refresh_deck_list();
+                self.redraw();
+            }
             _ => {}
+        }
+    }
+
+    fn handle_key_deck_menu(&mut self, key: char, confirm_delete: bool) {
+        if confirm_delete {
+            match key {
+                'y' => {
+                    self.storage.delete_deck(&self.current_deck_name);
+                    self.state = AppState::DeckList;
+                    self.refresh_deck_list();
+                    if self.cursor >= self.decks.len() && self.cursor > 0 {
+                        self.cursor = self.decks.len() - 1;
+                    }
+                    self.redraw();
+                }
+                'n' | 'q' => {
+                    self.state = AppState::DeckMenu { confirm_delete: false };
+                    self.redraw();
+                }
+                _ => {}
+            }
+        } else {
+            match key {
+                'd' => {
+                    self.state = AppState::DeckMenu { confirm_delete: true };
+                    self.redraw();
+                }
+                'q' => {
+                    self.state = AppState::DeckList;
+                    self.redraw();
+                }
+                _ => {}
+            }
+        }
+    }
+
+    fn do_import(&mut self) {
+        match import::listen_for_import() {
+            Some(result) => {
+                let name = result.name.unwrap_or_else(|| {
+                    format!("Imported {}", self.decks.len() + 1)
+                });
+                let name = self.unique_deck_name(&name);
+                self.storage.save_deck(&name, &result.cards);
+                log::info!("Imported deck '{}' with {} cards", name, result.cards.len());
+            }
+            None => {
+                log::info!("Import cancelled or failed");
+            }
+        }
+        self.state = AppState::DeckList;
+        self.refresh_deck_list();
+        self.redraw();
+    }
+
+    fn refresh_deck_list(&mut self) {
+        self.decks = self.storage.list_decks();
+    }
+
+    fn update_scroll(&mut self) {
+        let line_height = 28isize;
+        let list_top = 44isize;
+        let list_bottom = self.screensize.y - 60;
+        let max_visible = ((list_bottom - list_top) / line_height) as usize;
+
+        if self.cursor < self.scroll_offset {
+            self.scroll_offset = self.cursor;
+        } else if self.cursor >= self.scroll_offset + max_visible {
+            self.scroll_offset = self.cursor - max_visible + 1;
+        }
+    }
+
+    fn unique_deck_name(&self, base: &str) -> String {
+        let existing: Vec<&str> = self.decks.iter().map(|d| d.name.as_str()).collect();
+        if !existing.contains(&base) {
+            return base.to_string();
+        }
+        let mut i = 2;
+        loop {
+            let candidate = format!("{} ({})", base, i);
+            if !existing.contains(&candidate.as_str()) {
+                return candidate;
+            }
+            i += 1;
         }
     }
 }
