@@ -78,11 +78,11 @@ The app follows standard Xous patterns:
 
 - Rust stable (tested with 1.88.0)
 - Custom Xous sysroot for `riscv32imac-unknown-xous-elf`
-- See [xous-dev-toolkit](https://github.com/user/xous-dev-toolkit) for complete setup instructions
+- See [xous-dev-toolkit](https://github.com/tbcolby/xous-dev-toolkit) for complete setup instructions
 
 ## Development
 
-This app was developed using the methodology described in [xous-dev-toolkit](https://github.com/user/xous-dev-toolkit) — an LLM-assisted approach to Precursor app development on macOS ARM64 where the Renode GUI is unavailable.
+This app was developed using the methodology described in [xous-dev-toolkit](https://github.com/tbcolby/xous-dev-toolkit) — an LLM-assisted approach to Precursor app development on macOS ARM64 where the Renode GUI is unavailable.
 
 ## License
 
