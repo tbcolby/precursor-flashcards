@@ -38,6 +38,15 @@ A flashcard app for the [Precursor](https://www.crowdsupply.com/sutajio-kosagi/p
 
 ## Controls
 
+### Universal Keys
+
+| Key | Action |
+|-----|--------|
+| F1 | Menu / Help |
+| F4 | Exit / Back |
+| F2 | Flip Card (in review) |
+| F3 | Next Card (in review) |
+
 ### Deck List
 
 | Key | Action |

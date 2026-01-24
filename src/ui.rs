@@ -85,7 +85,7 @@ pub fn draw_deck_list(
     );
     nav_tv.style = GlyphStyle::Small;
     nav_tv.clear_area = true;
-    write!(nav_tv.text, "arrows=select ENTER=open i=import m=manage q=quit").unwrap();
+    write!(nav_tv.text, "F1=menu F4=quit  ENTER=open i=import").unwrap();
     gam.post_textview(&mut nav_tv).expect("can't post footer");
 
     gam.redraw().expect("can't redraw");
@@ -173,7 +173,7 @@ pub fn draw_card_review(
     nav_tv.clear_area = true;
     write!(
         nav_tv.text,
-        "{} {}/{}  <-/-> nav  SPACE flip  q=back",
+        "{} {}/{}  F2=flip F3=next F4=back",
         deck_name,
         card_index + 1,
         total_cards
@@ -235,6 +235,102 @@ pub fn draw_import_wait(gam: &Gam, content: Gid, screensize: Point, port: u16) {
     gam.redraw().expect("can't redraw");
 }
 
+pub fn draw_menu(
+    gam: &Gam,
+    content: Gid,
+    screensize: Point,
+    items: &[&str],
+    cursor: usize,
+) {
+    clear_screen(gam, content, screensize);
+
+    // Title
+    let mut title_tv = TextView::new(
+        content,
+        TextBounds::BoundingBox(Rectangle::new_coords(12, 12, screensize.x - 12, 40)),
+    );
+    title_tv.style = GlyphStyle::Bold;
+    title_tv.clear_area = true;
+    write!(title_tv.text, "MENU").unwrap();
+    gam.post_textview(&mut title_tv).expect("can't post title");
+
+    // Menu items
+    let line_height = 30;
+    let list_top = 52;
+
+    for (i, item) in items.iter().enumerate() {
+        let y = list_top + (i as isize) * line_height;
+        let marker = if i == cursor { "> " } else { "  " };
+
+        let mut tv = TextView::new(
+            content,
+            TextBounds::BoundingBox(Rectangle::new_coords(16, y, screensize.x - 16, y + line_height - 2)),
+        );
+        tv.style = GlyphStyle::Regular;
+        tv.clear_area = true;
+        write!(tv.text, "{}{}", marker, item).unwrap();
+        gam.post_textview(&mut tv).expect("can't post menu item");
+    }
+
+    // Footer
+    let mut nav_tv = TextView::new(
+        content,
+        TextBounds::BoundingBox(Rectangle::new_coords(
+            12,
+            screensize.y - 40,
+            screensize.x - 12,
+            screensize.y - 10,
+        )),
+    );
+    nav_tv.style = GlyphStyle::Small;
+    nav_tv.clear_area = true;
+    write!(nav_tv.text, "arrows=select  ENTER=open  F4=close").unwrap();
+    gam.post_textview(&mut nav_tv).expect("can't post footer");
+
+    gam.redraw().expect("can't redraw");
+}
+
+pub fn draw_help(gam: &Gam, content: Gid, screensize: Point, help_text: &str) {
+    clear_screen(gam, content, screensize);
+
+    // Render help text line by line
+    let line_height = 20;
+    let mut y = 16isize;
+
+    for line in help_text.lines() {
+        if y + line_height > screensize.y - 40 {
+            break;
+        }
+        let style = if y == 16 { GlyphStyle::Bold } else { GlyphStyle::Small };
+        let mut tv = TextView::new(
+            content,
+            TextBounds::BoundingBox(Rectangle::new_coords(16, y, screensize.x - 16, y + line_height - 2)),
+        );
+        tv.style = style;
+        tv.clear_area = true;
+        write!(tv.text, "{}", line).unwrap();
+        gam.post_textview(&mut tv).expect("can't post help line");
+        y += line_height;
+    }
+
+    // Footer
+    let mut nav_tv = TextView::new(
+        content,
+        TextBounds::BoundingBox(Rectangle::new_coords(
+            12,
+            screensize.y - 30,
+            screensize.x - 12,
+            screensize.y - 8,
+        )),
+    );
+    nav_tv.style = GlyphStyle::Small;
+    nav_tv.clear_area = true;
+    write!(nav_tv.text, "Press any key to close").unwrap();
+    gam.post_textview(&mut nav_tv).expect("can't post footer");
+
+    gam.redraw().expect("can't redraw");
+}
+
 pub fn draw_deck_menu(
     gam: &Gam,
     content: Gid,
@@ -283,7 +379,7 @@ pub fn draw_deck_menu(
     if confirm_delete {
         write!(nav_tv.text, "y=delete  n=cancel").unwrap();
     } else {
-        write!(nav_tv.text, "d=delete  q=back").unwrap();
+        write!(nav_tv.text, "d=delete  F4=back").unwrap();
     }
     gam.post_textview(&mut nav_tv).expect("can't post footer");
 

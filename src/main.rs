@@ -17,6 +17,12 @@ use crate::storage::DeckStorage;
 const SERVER_NAME: &str = "_Flashcards_";
 const APP_NAME: &str = "Flashcards";
 
+// F-key character codes from Xous keyboard service
+const KEY_F1: char = '\u{0011}';
+const KEY_F2: char = '\u{0012}';
+const KEY_F3: char = '\u{0013}';
+const KEY_F4: char = '\u{0014}';
+
 #[derive(Debug, num_derive::FromPrimitive, num_derive::ToPrimitive)]
 enum AppOp {
     Redraw = 0,
@@ -50,6 +56,10 @@ struct FlashcardApp {
     cards: Vec<Card>,
     current_card: usize,
     showing_back: bool,
+    // Menu overlay state
+    menu_visible: bool,
+    menu_cursor: usize,
+    help_visible: bool,
 }
 
 impl FlashcardApp {
@@ -92,10 +102,28 @@ impl FlashcardApp {
             cards: Vec::new(),
             current_card: 0,
             showing_back: false,
+            menu_visible: false,
+            menu_cursor: 0,
+            help_visible: false,
         }
     }
 
     fn redraw(&self) {
+        if self.help_visible {
+            ui::draw_help(&self.gam, self.content, self.screensize, self.help_text());
+            return;
+        }
+        if self.menu_visible {
+            ui::draw_menu(
+                &self.gam,
+                self.content,
+                self.screensize,
+                self.menu_items(),
+                self.menu_cursor,
+            );
+            return;
+        }
+
         match &self.state {
             AppState::DeckList => {
                 ui::draw_deck_list(
@@ -144,18 +172,237 @@ impl FlashcardApp {
     }
 
     fn handle_key(&mut self, key: char) {
+        // F-keys always processed first
+        match key {
+            KEY_F1 => { self.toggle_menu(); return; }
+            KEY_F4 => { self.handle_f4(); return; }
+            KEY_F2 => { self.handle_f2(); return; }
+            KEY_F3 => { self.handle_f3(); return; }
+            _ => {}
+        }
+
+        // If help screen is showing, any key dismisses it
+        if self.help_visible {
+            self.help_visible = false;
+            self.redraw();
+            return;
+        }
+
+        // If menu is open, handle menu navigation only
+        if self.menu_visible {
+            match key {
+                '↑' | 'k' => {
+                    if self.menu_cursor > 0 {
+                        self.menu_cursor -= 1;
+                        self.redraw();
+                    }
+                }
+                '↓' | 'j' => {
+                    let items = self.menu_items();
+                    if self.menu_cursor + 1 < items.len() {
+                        self.menu_cursor += 1;
+                        self.redraw();
+                    }
+                }
+                '\r' | '\n' => {
+                    self.menu_select_item();
+                }
+                _ => {}
+            }
+            return;
+        }
+
+        // Normal mode-specific key handling
         match self.state.clone() {
             AppState::DeckList => self.handle_key_deck_list(key),
             AppState::CardReview => self.handle_key_card_review(key),
             AppState::DeckMenu { confirm_delete } => self.handle_key_deck_menu(key, confirm_delete),
             AppState::ImportWait => {
-                // Import state handles 'q' for cancel but the listener blocks,
-                // so in practice this is only reached after import completes
                 if key == 'q' {
                     self.state = AppState::DeckList;
                     self.refresh_deck_list();
                     self.redraw();
                 }
+            }
+        }
+    }
+
+    fn menu_items(&self) -> &'static [&'static str] {
+        match &self.state {
+            AppState::DeckList => &["Help", "Import Deck (TCP)", "Manage Deck"],
+            AppState::CardReview => &["Help", "Flip Card", "Next Card", "Back to List"],
+            AppState::DeckMenu { .. } => &["Help", "Delete Deck", "Back to List"],
+            AppState::ImportWait => &["Help"],
+        }
+    }
+
+    fn toggle_menu(&mut self) {
+        if self.help_visible {
+            self.help_visible = false;
+            self.redraw();
+            return;
+        }
+        self.menu_visible = !self.menu_visible;
+        self.menu_cursor = 0;
+        self.redraw();
+    }
+
+    fn menu_select_item(&mut self) {
+        let state = self.state.clone();
+        self.menu_visible = false;
+
+        match &state {
+            AppState::DeckList => {
+                match self.menu_cursor {
+                    0 => { self.help_visible = true; }
+                    1 => {
+                        self.state = AppState::ImportWait;
+                        self.redraw();
+                        self.do_import();
+                        return;
+                    }
+                    2 => {
+                        if let Some(deck_meta) = self.decks.get(self.cursor) {
+                            self.current_deck_name = deck_meta.name.clone();
+                            self.state = AppState::DeckMenu { confirm_delete: false };
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            AppState::CardReview => {
+                match self.menu_cursor {
+                    0 => { self.help_visible = true; }
+                    1 => { self.showing_back = !self.showing_back; }
+                    2 => {
+                        if self.current_card + 1 < self.cards.len() {
+                            self.current_card += 1;
+                            self.showing_back = false;
+                        }
+                    }
+                    3 => {
+                        self.state = AppState::DeckList;
+                        self.refresh_deck_list();
+                    }
+                    _ => {}
+                }
+            }
+            AppState::DeckMenu { .. } => {
+                match self.menu_cursor {
+                    0 => { self.help_visible = true; }
+                    1 => {
+                        // Trigger delete confirmation
+                        self.state = AppState::DeckMenu { confirm_delete: true };
+                    }
+                    2 => {
+                        self.state = AppState::DeckList;
+                        self.refresh_deck_list();
+                    }
+                    _ => {}
+                }
+            }
+            AppState::ImportWait => {
+                if self.menu_cursor == 0 {
+                    self.help_visible = true;
+                }
+            }
+        }
+        self.redraw();
+    }
+
+    fn handle_f2(&mut self) {
+        if self.help_visible { self.help_visible = false; self.redraw(); return; }
+        if self.menu_visible { self.menu_visible = false; }
+        // F2 = Flip card (during review)
+        if let AppState::CardReview = &self.state {
+            self.showing_back = !self.showing_back;
+        }
+        self.redraw();
+    }
+
+    fn handle_f3(&mut self) {
+        if self.help_visible { self.help_visible = false; self.redraw(); return; }
+        if self.menu_visible { self.menu_visible = false; }
+        // F3 = Next card (during review)
+        if let AppState::CardReview = &self.state {
+            if self.current_card + 1 < self.cards.len() {
+                self.current_card += 1;
+                self.showing_back = false;
+            }
+        }
+        self.redraw();
+    }
+
+    fn handle_f4(&mut self) {
+        // F4 closes help/menu first
+        if self.help_visible {
+            self.help_visible = false;
+            self.redraw();
+            return;
+        }
+        if self.menu_visible {
+            self.menu_visible = false;
+            self.redraw();
+            return;
+        }
+        // F4 = Back: card review→deck list→quit
+        match &self.state {
+            AppState::CardReview => {
+                self.state = AppState::DeckList;
+                self.refresh_deck_list();
+                self.redraw();
+            }
+            AppState::DeckMenu { .. } => {
+                self.state = AppState::DeckList;
+                self.redraw();
+            }
+            AppState::DeckList => {
+                // At top level - quit handled by main loop
+            }
+            AppState::ImportWait => {
+                // Can't interrupt blocking import
+            }
+        }
+    }
+
+    fn help_text(&self) -> &'static str {
+        match &self.state {
+            AppState::DeckList => {
+                "FLASHCARDS HELP\n\n\
+                 F1     Menu\n\
+                 F4     Quit\n\n\
+                 Up/Dn  Move cursor\n\
+                 Enter  Open deck\n\
+                 i      Import deck\n\
+                 m      Manage deck\n\
+                 q      Quit"
+            }
+            AppState::CardReview => {
+                "CARD REVIEW HELP\n\n\
+                 F1     Menu\n\
+                 F2     Flip card\n\
+                 F3     Next card\n\
+                 F4     Back to list\n\n\
+                 Space  Flip card\n\
+                 <-/->  Prev/Next\n\
+                 n/p    Next/Prev\n\
+                 q      Back to list"
+            }
+            AppState::DeckMenu { .. } => {
+                "DECK MENU HELP\n\n\
+                 F1     Menu\n\
+                 F4     Back to list\n\n\
+                 d      Delete deck\n\
+                 y/n    Confirm/cancel\n\
+                 q      Back to list"
+            }
+            AppState::ImportWait => {
+                "IMPORT HELP\n\n\
+                 Waiting for TCP\n\
+                 connection on\n\
+                 port 7878.\n\n\
+                 Send TSV file\n\
+                 from computer."
             }
         }
     }
@@ -211,7 +458,7 @@ impl FlashcardApp {
     fn handle_key_card_review(&mut self, key: char) {
         match key {
             '→' | 'n' => {
-                if self.current_card < self.cards.len() - 1 {
+                if self.current_card + 1 < self.cards.len() {
                     self.current_card += 1;
                     self.showing_back = false;
                     self.redraw();
