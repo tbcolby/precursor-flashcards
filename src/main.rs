@@ -60,6 +60,7 @@ struct FlashcardApp {
     menu_visible: bool,
     menu_cursor: usize,
     help_visible: bool,
+    should_quit: bool,
 }
 
 impl FlashcardApp {
@@ -105,6 +106,7 @@ impl FlashcardApp {
             menu_visible: false,
             menu_cursor: 0,
             help_visible: false,
+            should_quit: false,
         }
     }
 
@@ -230,8 +232,8 @@ impl FlashcardApp {
     fn menu_items(&self) -> &'static [&'static str] {
         match &self.state {
             AppState::DeckList => &["Help", "Import Deck (TCP)", "Manage Deck"],
-            AppState::CardReview => &["Help", "Flip Card", "Next Card", "Back to List"],
-            AppState::DeckMenu { .. } => &["Help", "Delete Deck", "Back to List"],
+            AppState::CardReview => &["Help", "Flip Card", "Next Card", "Shuffle", "Back to List"],
+            AppState::DeckMenu { .. } => &["Help", "Export (TCP)", "Delete Deck", "Back to List"],
             AppState::ImportWait => &["Help"],
         }
     }
@@ -281,6 +283,12 @@ impl FlashcardApp {
                         }
                     }
                     3 => {
+                        // Shuffle cards
+                        self.shuffle_cards();
+                        self.current_card = 0;
+                        self.showing_back = false;
+                    }
+                    4 => {
                         self.state = AppState::DeckList;
                         self.refresh_deck_list();
                     }
@@ -291,10 +299,19 @@ impl FlashcardApp {
                 match self.menu_cursor {
                     0 => { self.help_visible = true; }
                     1 => {
+                        // Export via TCP
+                        if let Some(cards) = self.storage.load_deck(&self.current_deck_name) {
+                            match import::export_via_tcp(&self.current_deck_name, &cards) {
+                                Ok(bytes) => log::info!("Exported {} bytes", bytes),
+                                Err(e) => log::error!("Export failed: {}", e),
+                            }
+                        }
+                    }
+                    2 => {
                         // Trigger delete confirmation
                         self.state = AppState::DeckMenu { confirm_delete: true };
                     }
-                    2 => {
+                    3 => {
                         self.state = AppState::DeckList;
                         self.refresh_deck_list();
                     }
@@ -357,7 +374,8 @@ impl FlashcardApp {
                 self.redraw();
             }
             AppState::DeckList => {
-                // At top level - quit handled by main loop
+                // At top level - quit the app
+                self.should_quit = true;
             }
             AppState::ImportWait => {
                 // Can't interrupt blocking import
@@ -386,12 +404,14 @@ impl FlashcardApp {
                  Space  Flip card\n\
                  <-/->  Prev/Next\n\
                  n/p    Next/Prev\n\
+                 s      Shuffle deck\n\
                  q      Back to list"
             }
             AppState::DeckMenu { .. } => {
                 "DECK MENU HELP\n\n\
                  F1     Menu\n\
                  F4     Back to list\n\n\
+                 e      Export (TCP 7879)\n\
                  d      Delete deck\n\
                  y/n    Confirm/cancel\n\
                  q      Back to list"
@@ -449,7 +469,9 @@ impl FlashcardApp {
                 }
             }
             'q' => {
-                // Quit is handled by the main loop sending AppOp::Quit
+                // Signal quit - this will be processed by returning true from handle_key
+                // The main loop will then terminate
+                self.should_quit = true;
             }
             _ => {}
         }
@@ -475,6 +497,12 @@ impl FlashcardApp {
                 self.showing_back = !self.showing_back;
                 self.redraw();
             }
+            's' => {
+                self.shuffle_cards();
+                self.current_card = 0;
+                self.showing_back = false;
+                self.redraw();
+            }
             'q' => {
                 self.state = AppState::DeckList;
                 self.refresh_deck_list();
@@ -491,9 +519,14 @@ impl FlashcardApp {
                     self.storage.delete_deck(&self.current_deck_name);
                     self.state = AppState::DeckList;
                     self.refresh_deck_list();
-                    if self.cursor >= self.decks.len() && self.cursor > 0 {
+                    // Adjust cursor if it's now beyond the list
+                    if self.decks.is_empty() {
+                        self.cursor = 0;
+                        self.scroll_offset = 0;
+                    } else if self.cursor >= self.decks.len() {
                         self.cursor = self.decks.len() - 1;
                     }
+                    self.update_scroll();
                     self.redraw();
                 }
                 'n' | 'q' => {
@@ -504,6 +537,16 @@ impl FlashcardApp {
             }
         } else {
             match key {
+                'e' => {
+                    // Export via TCP
+                    if let Some(cards) = self.storage.load_deck(&self.current_deck_name) {
+                        match import::export_via_tcp(&self.current_deck_name, &cards) {
+                            Ok(bytes) => log::info!("Exported {} bytes", bytes),
+                            Err(e) => log::error!("Export failed: {}", e),
+                        }
+                    }
+                    self.redraw();
+                }
                 'd' => {
                     self.state = AppState::DeckMenu { confirm_delete: true };
                     self.redraw();
@@ -553,6 +596,23 @@ impl FlashcardApp {
         }
     }
 
+    fn shuffle_cards(&mut self) {
+        // Simple Fisher-Yates shuffle using system time as seed
+        let seed = xous::create_server_id().unwrap().0[0] as usize;
+        let len = self.cards.len();
+        if len <= 1 {
+            return;
+        }
+        let mut rng = seed;
+        for i in (1..len).rev() {
+            // Simple LCG-based random
+            rng = rng.wrapping_mul(1103515245).wrapping_add(12345);
+            let j = rng % (i + 1);
+            self.cards.swap(i, j);
+        }
+        log::info!("Shuffled {} cards", len);
+    }
+
     fn unique_deck_name(&self, base: &str) -> String {
         let existing: Vec<&str> = self.decks.iter().map(|d| d.name.as_str()).collect();
         if !existing.contains(&base) {
@@ -599,6 +659,10 @@ fn main() -> ! {
                     if key != '\u{0000}' {
                         app.handle_key(key);
                     }
+                }
+                // Check if quit was requested
+                if app.should_quit {
+                    break;
                 }
             }),
             Some(AppOp::FocusChange) => xous::msg_scalar_unpack!(msg, new_state_code, _, _, _, {

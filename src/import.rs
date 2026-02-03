@@ -109,3 +109,45 @@ pub fn listen_for_import() -> Option<ImportResult> {
 pub fn listen_port() -> u16 {
     LISTEN_PORT
 }
+
+/// Export cards to TSV format.
+pub fn cards_to_tsv(name: &str, cards: &[Card]) -> String {
+    let mut output = format!("#name:{}\n", name);
+    for card in cards {
+        output.push_str(&card.front);
+        output.push('\t');
+        output.push_str(&card.back);
+        output.push('\n');
+    }
+    output
+}
+
+/// Export deck via TCP on port 7879 (one port above import).
+/// Waits for a client to connect and sends the TSV data.
+pub fn export_via_tcp(name: &str, cards: &[Card]) -> Result<usize, &'static str> {
+    use std::io::Write;
+
+    const EXPORT_PORT: u16 = 7879;
+
+    let listener = match TcpListener::bind(format!("0.0.0.0:{}", EXPORT_PORT)) {
+        Ok(l) => l,
+        Err(_) => return Err("Failed to bind export port"),
+    };
+
+    log::info!("Waiting for export connection on port {}", EXPORT_PORT);
+
+    match listener.accept() {
+        Ok((mut stream, addr)) => {
+            log::info!("Export connection from {:?}", addr);
+            let tsv = cards_to_tsv(name, cards);
+            match stream.write_all(tsv.as_bytes()) {
+                Ok(_) => {
+                    log::info!("Exported {} bytes", tsv.len());
+                    Ok(tsv.len())
+                }
+                Err(_) => Err("Write failed"),
+            }
+        }
+        Err(_) => Err("Accept failed"),
+    }
+}

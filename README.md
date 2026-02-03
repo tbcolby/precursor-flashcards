@@ -28,9 +28,11 @@ A flashcard app for the [Precursor](https://www.crowdsupply.com/sutajio-kosagi/p
 
 - Multiple decks with persistent storage via PDDB
 - Built-in demo deck on first launch
-- Load your own decks from a computer over the network (TCP push)
+- **Import** decks from a computer over the network (TCP port 7878)
+- **Export** decks back to a computer (TCP port 7879)
 - Flip between question and answer with Space/Enter
 - Navigate between cards with arrow keys or n/p
+- **Shuffle** deck order for randomized review
 - Deck management with delete support
 - Scrollable deck list for large collections
 - Up to 500 cards per deck
@@ -64,12 +66,14 @@ A flashcard app for the [Precursor](https://www.crowdsupply.com/sutajio-kosagi/p
 | Space / Enter | Flip card (question/answer) |
 | Right arrow / `n` | Next card |
 | Left arrow / `p` | Previous card |
+| `s` | Shuffle deck |
 | `q` | Return to deck list |
 
 ### Deck Menu
 
 | Key | Action |
 |-----|--------|
+| `e` | Export deck (TCP) |
 | `d` | Delete deck |
 | `y` / `n` | Confirm/cancel deletion |
 | `q` | Return to deck list |
@@ -136,6 +140,22 @@ What is DNA's sugar?	Deoxyribose
 How many chromosomes do humans have?	46
 ```
 
+## Exporting Decks
+
+You can export any deck back to your computer using TCP. This allows backup and transfer of decks between devices.
+
+### 1. Start the export listener
+
+On the Precursor, go to the deck menu (press `m` on the deck list) and press `e` for export. The device will listen on port 7879.
+
+### 2. Receive the file on your computer
+
+```bash
+nc <device-ip> 7879 > my_deck.tsv
+```
+
+The exported file uses the same TSV format as import, with the `#name:` header preserved.
+
 ## Integration with xous-core
 
 This app is designed to be placed in the `apps/` directory of the [xous-core](https://github.com/betrusted-io/xous-core) repository.
@@ -191,7 +211,7 @@ The app follows standard Xous patterns:
 | `src/main.rs` | App state machine, key handling, main loop |
 | `src/deck.rs` | Card/DeckMeta structs, binary serialization |
 | `src/storage.rs` | PDDB operations (list, load, save, delete) |
-| `src/import.rs` | TSV parser, TCP listener |
+| `src/import.rs` | TSV parser, TCP import/export |
 | `src/ui.rs` | Screen drawing functions |
 
 ## Toolchain Requirements
@@ -203,6 +223,19 @@ The app follows standard Xous patterns:
 ## Development
 
 This app was developed using the methodology described in [xous-dev-toolkit](https://github.com/tbcolby/xous-dev-toolkit) — an LLM-assisted approach to Precursor app development on macOS ARM64.
+
+## Changelog
+
+### v0.2.0
+
+- **Shuffle** — Randomize card order with 's' key or menu option (Fisher-Yates algorithm)
+- **Export** — Send decks back to computer via TCP (port 7879)
+- **Fixed quit** — 'q' and F4 now properly exit the app from deck list
+- **Fixed cursor** — Cursor position correctly adjusted after deleting a deck
+
+### v0.1.0
+
+- Initial release with import, multi-deck support, and PDDB storage
 
 ## Author
 
